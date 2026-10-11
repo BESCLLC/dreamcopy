@@ -40,7 +40,7 @@ import {
   requireMarket,
   shutdown,
   sleep,
-  tradingKeyCheck,
+  linkCoverage,
   type PerpMarket,
 } from "@dreamdex-bot-kit/perp-core";
 
@@ -99,13 +99,28 @@ async function main(): Promise<void> {
   if (!me) {
     console.log("read-only: no PRIVATE_KEY, so health is reported but nothing is closed.");
   } else {
-    // The app links a trading key on every perp market at once, so one market
-    // answers for all of them.
-    const [first] = await perpMarkets(ctx.exchange);
-    if (first) {
-      const link = await tradingKeyCheck(ctx, first);
-      if (link.message) console.log(link.message);
-      if (!link.ok && live) process.exit(1);
+    // The app links a trading key market by market, at the moment it links,
+    // so a market listed later is not covered until the same address is added
+    // again. Check every market the guard may have to act on.
+    if (ctx.tradingKey) {
+      const markets = ctx.config.symbol
+        ? [await requireMarket(ctx.exchange, ctx.config.symbol, { includeHalted: true })]
+        : await perpMarkets(ctx.exchange, false, { includeHalted: true });
+      const { linked, missing } = await linkCoverage(ctx, markets);
+      if (linked.length === 0) {
+        console.log(
+          `This bot key (${ctx.tradingKey.operator}) cannot trade for ${ctx.tradingKey.owner} on any perp market. ` +
+            "In the DreamDEX app open the wallet, choose Link a bot, tick Perps and paste this key's address.",
+        );
+        if (live) process.exit(1);
+      } else if (missing.length > 0) {
+        console.log(
+          `trading key covers ${linked.length} of ${markets.length} markets; not ${missing.map((m) => m.display).join(", ")}. ` +
+            "Add the same address again with Link a bot to cover them: the guard cannot reduce a position there.",
+        );
+      } else {
+        console.log(`trading key ${ctx.tradingKey.operator} guards ${ctx.tradingKey.owner} on all ${markets.length} markets`);
+      }
     }
   }
 
@@ -133,12 +148,18 @@ async function main(): Promise<void> {
 
       if (!Number.isFinite(ratio)) continue;
 
-      if (ratio < FLATTEN_BELOW) {
-        console.log(`health ${ratio.toFixed(3)} is below the flatten threshold, closing the position`);
-        await closePosition(ctx, market, me, { label: "guard flatten" });
-      } else if (ratio < REDUCE_BELOW) {
-        console.log(`health ${ratio.toFixed(3)} is below the reduce threshold, closing ${REDUCE_PCT}%`);
-        await closePosition(ctx, market, me, { fraction: REDUCE_PCT / 100, label: "guard reduce" });
+      // One market refusing (a key not yet linked there, a book with nothing to
+      // cross) must not stop the guard watching the rest.
+      try {
+        if (ratio < FLATTEN_BELOW) {
+          console.log(`health ${ratio.toFixed(3)} is below the flatten threshold, closing the position`);
+          await closePosition(ctx, market, me, { label: "guard flatten" });
+        } else if (ratio < REDUCE_BELOW) {
+          console.log(`health ${ratio.toFixed(3)} is below the reduce threshold, closing ${REDUCE_PCT}%`);
+          await closePosition(ctx, market, me, { fraction: REDUCE_PCT / 100, label: "guard reduce" });
+        }
+      } catch (err) {
+        console.log(`could not act on ${market.display}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 

@@ -55,6 +55,27 @@ export interface SizingResult {
 }
 
 /**
+ * Why nothing can be placed, in the words a trader can act on. The gates that
+ * zero a size are configuration, not a shortfall, so naming the SDK's enum
+ * leaves the trader nowhere to go.
+ */
+function blockedReason(limitedBy: string | undefined): string {
+  switch (limitedBy) {
+    case "voucherBlocked":
+      return (
+        "this account trades on competition credit (a voucher) and this market does not accept it, " +
+        "so no position can be opened or increased here. Pick a market the credit covers"
+      );
+    case "restricted":
+      return "the market is close-only right now, so nothing may open or increase a position";
+    case "isolated":
+      return "isolated margin bars this market for this account while it holds a position in another one";
+    default:
+      return `nothing can be placed: ${limitedBy ?? "unknown limit"}`;
+  }
+}
+
+/**
  * Ask the pool how much it will accept, then clamp the request to it.
  *
  * `limitedBy` is populated whether or not the size is placeable: it names what
@@ -76,7 +97,7 @@ export async function sizeOrder(exchange: SomniaMarkets, req: SizingRequest): Pr
     return { ok: false, quantity: 0n, reason: "market is un-priceable right now (stale mark)" };
   }
   if (!max.placeable) {
-    return { ok: false, quantity: 0n, limitedBy: max.limitedBy, reason: `nothing can be placed: ${max.limitedBy}` };
+    return { ok: false, quantity: 0n, limitedBy: max.limitedBy, reason: blockedReason(max.limitedBy) };
   }
 
   const capped = wanted < max.maxQuantity ? wanted : max.maxQuantity;

@@ -16,6 +16,7 @@ import {
   alignQuantity,
   displayName,
   markAgeSec,
+  markOf,
   sizeForNotional,
   toRaw,
   type PerpInfo,
@@ -108,6 +109,18 @@ describe("health", () => {
 });
 
 describe("funding", () => {
+  // A market listed before its first settlement has an indexed row with no
+  // funding fields and no mark. Reading it used to throw (the SDK refuses a
+  // zero window), which took the doctor and the funding bot down on every new
+  // listing.
+  it("reads a newly listed market's empty row as unknown rather than throwing", () => {
+    const listed = { ...btc, fundingRate: null, fundingWindowSec: null, fundingIntervalSec: null, markPrice: null };
+    const view = fundingApr(listed as unknown as PerpInfo);
+    expect(view.known).toBe(false);
+    expect(view.apr).toBe(0);
+    expect(markOf(listed as unknown as PerpInfo)).toBe(0);
+  });
+
   it("pays shorts when the rate is positive", () => {
     const view = fundingApr({ ...btc, fundingRate: "1000000000000000" } as PerpInfo);
     expect(view.paidSide).toBe("short");

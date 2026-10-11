@@ -32,12 +32,16 @@ import {
   healthRatio,
   liveMark,
   markOf,
-  fundingApr,
+  liveFunding,
+  linkCoverage,
   pendingStops,
-  tradingKeyCheck,
+  type PerpMarket,
 } from "@dreamdex-bot-kit/perp-core";
 
 const ERC20 = parseAbi(["function balanceOf(address) view returns (uint256)"]);
+
+/** A price with enough digits to read, whether it is 83,000 or 0.0058. */
+const px = (v: number) => (Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(4));
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -64,9 +68,20 @@ async function main(): Promise<void> {
     const pc = ctx.exchange.client.getViemClient();
     // The key that sends pays the gas: the bot key in trading-key mode.
     const gas = await pc.getBalance({ address: ctx.tradingKey?.operator ?? me });
-    if (cfg.owner) {
-      const link = await tradingKeyCheck(ctx, markets[0]);
-      console.log(`link     : ${link.ok ? "ok" : "NOT LINKED"}${link.message ? ` · ${link.message}` : ""}`);
+    if (cfg.owner && !ctx.tradingKey) {
+      console.log(`link     : watching ${cfg.owner} read-only, set PRIVATE_KEY to the bot key linked to it`);
+    } else if (ctx.tradingKey) {
+      // The app links a key market by market, at the moment it links, so a
+      // market listed since is not covered until the address is added again.
+      const { linked, missing } = await linkCoverage(ctx, markets);
+      const names = (list: PerpMarket[]) => list.map((m) => m.display).join(", ");
+      console.log(
+        missing.length === 0
+          ? `link     : ok on all ${markets.length} markets`
+          : linked.length === 0
+            ? `link     : NOT LINKED · open the wallet in the app, choose Link a bot, tick Perps and paste ${ctx.tradingKey.operator}`
+            : `link     : ok on ${linked.length} of ${markets.length} · not ${names(missing)}. Add the same address again with Link a bot to cover them.`,
+      );
     }
     const bal = await pc.readContract({ address: collateral, abi: ERC20, functionName: "balanceOf", args: [me] });
     console.log(`gas      : ${formatUnits(gas, 18)} ${cfg.chainId === 5031 ? "SOMI" : "STT"}`);
@@ -102,15 +117,15 @@ async function main(): Promise<void> {
   for (const m of markets) {
     try {
       const live = await liveMark(ctx.exchange, m);
-      const funding = fundingApr(m.info);
+      const funding = await liveFunding(ctx.exchange, m);
       const book = await ctx.exchange.fetchOrderBook(m.symbol, 1);
       const bid = book.bids[0]?.[0];
       const ask = book.asks[0]?.[0];
-      const markStr = live !== undefined ? live.toFixed(2) : `un-priceable (row ${markOf(m.info).toFixed(2)})`;
+      const markStr = live !== undefined ? px(live) : `un-priceable (row ${px(markOf(m.info))})`;
       const stops = me ? (await pendingStops(ctx.exchange, m, me)).length : 0;
       console.log(
-        `${m.display.padEnd(10)} mark=${markStr} · funding ${(funding.apr * 100).toFixed(3)}% (pays ${funding.paidSide}s) · ` +
-          `book[bid=${bid?.toFixed(1) ?? "—"} ask=${ask?.toFixed(1) ?? "—"}] · ` +
+        `${m.display.padEnd(10)} mark=${markStr} · funding ${funding.known ? `${(funding.apr * 100).toFixed(3)}% (pays ${funding.paidSide}s)` : "unreadable"} · ` +
+          `book[bid=${bid === undefined ? "none" : px(bid)} ask=${ask === undefined ? "none" : px(ask)}] · ` +
           // Raw units here are unreadable on a 24-decimal market, and reading
           // them wrong is the mistake this script exists to prevent: prices are
           // always 18dp, sizes use the market's own baseDecimals.

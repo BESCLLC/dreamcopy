@@ -103,6 +103,33 @@ export async function tradingKeyCheck(ctx: PerpContext, market: PerpMarket): Pro
 }
 
 /**
+ * Which of `markets` the trading key can place and cancel on, for a bot that
+ * acts on more than one market.
+ *
+ * The app links a key pool by pool, at link time, so a market listed later is
+ * not covered until the same address is added again. One market answering for
+ * all of them would call a key that predates a listing unlinked everywhere, or
+ * linked where it is not.
+ */
+export async function linkCoverage(
+  ctx: PerpContext,
+  markets: PerpMarket[],
+): Promise<{ linked: PerpMarket[]; missing: PerpMarket[] }> {
+  const key = ctx.tradingKey;
+  if (!key) return { linked: markets, missing: [] };
+  const covered = await Promise.all(
+    markets.map(async (m) => {
+      const status = await linkStatus(key, m.info.poolAddress);
+      return status.place && status.cancel;
+    }),
+  );
+  return {
+    linked: markets.filter((_, i) => covered[i] === true),
+    missing: markets.filter((_, i) => covered[i] !== true),
+  };
+}
+
+/**
  * Throw if a write's receipt says the transaction REVERTED.
  *
  * A backstop, not the primary signal. Measured on the perp order path, the SDK

@@ -28,7 +28,6 @@ import {
   envNum,
   loadEnv,
   liveMark,
-  markOf,
   onStop,
   placePerp,
   positionIn,
@@ -60,12 +59,20 @@ interface Quote {
   atMark: number;
 }
 
-/** Notional of the current position, signed: positive is long. */
-async function inventoryUsdso(ctx: ReturnType<typeof createExchange>, market: PerpMarket): Promise<number> {
+/**
+ * Notional of the current position, signed: positive is long. Valued at the
+ * mark the quotes are centred on, since a newly listed market's row has no
+ * mark of its own yet.
+ */
+async function inventoryUsdso(
+  ctx: ReturnType<typeof createExchange>,
+  market: PerpMarket,
+  mark: number,
+): Promise<number> {
   const position = await positionIn(ctx.exchange, market);
   if (!position) return 0;
   const signed = position.side === "long" ? position.contracts : -position.contracts;
-  return signed * markOf(market.info);
+  return signed * mark;
 }
 
 async function main(): Promise<void> {
@@ -123,7 +130,7 @@ async function main(): Promise<void> {
       resting = { atMark: 0 };
     }
 
-    const inventory = me ? await inventoryUsdso(ctx, fresh) : 0;
+    const inventory = me ? await inventoryUsdso(ctx, fresh, mark) : 0;
     // Leaning long: push the bid down and pull the ask in, so the ask fills
     // first and brings the book back to flat.
     const lean = MAX_POSITION > 0 ? Math.max(-1, Math.min(1, inventory / MAX_POSITION)) : 0;

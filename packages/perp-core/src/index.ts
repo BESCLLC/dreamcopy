@@ -12,6 +12,7 @@
 export {
   createExchange,
   tradingKeyCheck,
+  linkCoverage,
   shutdown,
   assertTxOk,
   sleep,
@@ -88,6 +89,7 @@ export {
 export {
   fundingApr,
   fundingSide,
+  liveFunding,
   type FundingView,
 } from "./funding.js";
 

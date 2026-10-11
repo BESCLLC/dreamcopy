@@ -27,7 +27,7 @@ import {
   ensureLeverage,
   envNum,
   loadEnv,
-  fundingApr,
+  liveFunding,
   liveMark,
   markOf,
   onStop,
@@ -90,10 +90,20 @@ async function main(): Promise<void> {
     // Re-read the market row each cycle: funding is a market-level number that
     // moves under a bot that caches it.
     const fresh = await requireMarket(ctx.exchange, market.symbol, { reload: true });
-    const funding = fundingApr(fresh.info);
+    // From the pool, not the row: the row only moves on a settlement, and a
+    // newly listed market has none yet.
+    const funding = await liveFunding(ctx.exchange, fresh);
     const position = me ? await positionIn(ctx.exchange, fresh) : undefined;
     const liveAt = (await liveMark(ctx.exchange, fresh)) ?? markOf(fresh.info);
     const held = position ? position.contracts * liveAt : 0;
+
+    if (!funding.known) {
+      // No rate to act on is not a rate of zero: closing a carry on it would
+      // be a decision taken on a missing reading.
+      console.log(`funding on ${fresh.display} cannot be read right now, holding off this cycle`);
+      await sleep(POLL_MS, stopped);
+      continue;
+    }
 
     console.log(
       `funding ${(funding.apr * 100).toFixed(3)}% APR, paying ${funding.paidSide}s | ` +

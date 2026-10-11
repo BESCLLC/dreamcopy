@@ -188,7 +188,9 @@ export function sizeForNotional(notionalUsdso: number, info: PerpInfo, atMark?: 
  * Use {@link liveMark} for those.
  */
 export function markOf(info: PerpInfo): number {
-  return Number(BigInt(info.markPrice)) / 1e18;
+  // A newly listed market's row carries no mark until its first funding
+  // update; 0 says "no reading", which every caller already treats as unpriced.
+  return info.markPrice == null ? 0 : Number(BigInt(info.markPrice)) / 1e18;
 }
 
 /** Seconds since the row's mark was written, or Infinity when it carries no timestamp. */
@@ -221,5 +223,5 @@ export async function liveMark(exchange: SomniaMarkets, market: PerpMarket): Pro
 
 /** The index price as a human number. */
 export function indexOf(info: PerpInfo): number {
-  return Number(BigInt(info.indexPrice)) / 1e18;
+  return info.indexPrice == null ? 0 : Number(BigInt(info.indexPrice)) / 1e18;
 }

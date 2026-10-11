@@ -49,6 +49,15 @@ dry-run logs first, then set `DRY_RUN=false`.
 At startup each strategy checks the link and exits with a message if the bot key
 cannot trade that market for your account.
 
+Linking covers the perp markets that exist when you link. When a market is listed
+later, add the same bot address again with **Link a bot**: the app only grants
+what is missing, so the new markets get covered. `npm run perp:doctor` shows how
+many markets the key covers and names the rest.
+
+Competition credit (the Perps Arena airdrop) is a voucher, and a voucher only
+trades on the markets it allows. On any other market the bot says so and opens
+nothing; pick a market the credit covers, or fund the account yourself.
+
 What a trading key cannot do, and how the strategies handle it:
 
 - **Leverage** is your account's setting. The bot reads it and leaves it alone; change

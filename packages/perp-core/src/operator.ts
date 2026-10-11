@@ -134,6 +134,7 @@ export function linkProblem(key: TradingKey, status: LinkStatus, market: string)
   return (
     `This bot key (${key.operator}) cannot ${missing.join("/")} orders for ${key.owner} on ${market}. ` +
     "In the DreamDEX app open the wallet, choose Link a bot, tick Perps and paste this key's address. " +
+    "A market listed after you linked needs the same address added again, which covers the new ones. " +
     "Check that OWNER_ADDRESS is the account you linked it on, and that NETWORK matches the app's network."
   );
 }
