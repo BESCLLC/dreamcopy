@@ -87,7 +87,15 @@ export async function preflight(
   exchange: SomniaMarkets,
   market: PerpMarket,
   account: `0x${string}`,
-  opts: { requiredUsdso?: number } = {},
+  opts: {
+    requiredUsdso?: number;
+    /**
+     * The account is traded through a linked key (OWNER_ADDRESS). The key can
+     * never move funds, so the fix is the app's Perps ⇆ Spot transfer rather
+     * than an approve and deposit only the account itself can send.
+     */
+    linkedAccount?: boolean;
+  } = {},
 ): Promise<PreflightResult> {
   const snapshot = await marginSnapshot(exchange, market, account);
   const decimals = market.info.quoteDecimals;
@@ -95,7 +103,18 @@ export async function preflight(
   const required = opts.requiredUsdso ?? 0;
   const requiredRaw = BigInt(Math.max(0, Math.round(required * 10 ** decimals)));
 
+  const topUp = "In the DreamDEX app, open Perps ⇆ Spot and move USDso from Spot wallet to Perps account";
+
   if (snapshot.equity === 0n && snapshot.unlocked === 0n) {
+    if (opts.linkedAccount) {
+      return {
+        ok: false,
+        snapshot,
+        message:
+          `The Perps balance of ${account} is empty, so every order would fail: perp orders lock margin ` +
+          `from it, not from the account's spot wallet, and a linked bot cannot move funds. ${topUp}.`,
+      };
+    }
     return {
       ok: false,
       snapshot,
@@ -112,7 +131,8 @@ export async function preflight(
       snapshot,
       message:
         `MarginBank has ${human(snapshot.unlocked)} unlocked, and this configuration needs about ` +
-        `${required.toFixed(2)} to open its first position. Deposit more, or lower the notional.`,
+        `${required.toFixed(2)} to open its first position. ` +
+        (opts.linkedAccount ? `${topUp}, or lower the notional.` : "Deposit more, or lower the notional."),
     };
   }
 
