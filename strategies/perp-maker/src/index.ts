@@ -91,7 +91,10 @@ async function main(): Promise<void> {
     const link = await tradingKeyCheck(ctx, market);
     if (link.message) console.log(link.message);
     if (!link.ok && live) process.exit(1);
-    const check = await preflight(ctx.exchange, market, me, { requiredUsdso: (NOTIONAL * 2) / Math.max(1, LEVERAGE) });
+    const check = await preflight(ctx.exchange, market, me, {
+      requiredUsdso: (NOTIONAL * 2) / Math.max(1, LEVERAGE),
+      linkedAccount: Boolean(ctx.config.owner),
+    });
     console.log(check.message);
     if (!check.ok) process.exit(1);
     const lev = await ensureLeverage(ctx, market, me, LEVERAGE);

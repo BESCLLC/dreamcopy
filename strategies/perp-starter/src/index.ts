@@ -83,7 +83,10 @@ async function main(): Promise<void> {
 
     // PERP_NOTIONAL_USDSO is position value, not margin posted: at 2x a
     // notional of 50 needs about 25 in the bank.
-    const check = await preflight(ctx.exchange, market, me, { requiredUsdso: NOTIONAL / Math.max(1, LEVERAGE) });
+    const check = await preflight(ctx.exchange, market, me, {
+      requiredUsdso: NOTIONAL / Math.max(1, LEVERAGE),
+      linkedAccount: Boolean(ctx.config.owner),
+    });
     console.log(check.message);
     if (!check.ok) process.exit(1);
 
