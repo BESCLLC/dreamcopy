@@ -48,14 +48,16 @@ import {
 import { isAddress, parseUnits } from "viem";
 
 import {
-  alignToLot,
+  HIDEKI_INDEXER,
   buildLeaderboard,
-  clampToNotional,
+  fetchAccountFills,
+  fetchRecentFills,
   ingest,
+  mirrorTarget,
   netPosition,
+  norm,
   type FollowState,
-} from "./copy.js";
-import { HIDEKI_INDEXER, fetchAccountFills, fetchRecentFills, norm } from "./indexer.js";
+} from "@dreamdex-bot-kit/copy-core";
 import { loadState, saveState, type StateKey } from "./state.js";
 import { ago, bad, bar, banner, c, field, heading, info, money, num, ok, short, signedQty as fmtQty, table, warn } from "./ui.js";
 
@@ -325,32 +327,43 @@ async function main(): Promise<void> {
       const folded = ingest(follow, page, leader);
       follow = folded.state;
 
-      const target = alignToLot(
-        clampToNotional(anchor + scaleBy(follow.leaderNet, RATIO), mark, MAX_NOTIONAL, decimals),
-        lot,
-      );
       const ours = me ? await positionRaw(ctx, fresh) : 0n;
-      const gap = alignToLot(target - ours, lot);
-      const magnitude = gap < 0n ? -gap : gap;
-      const gapValue = Number.isFinite(mark) ? human(magnitude) * mark : 0;
+      // One shared decision, the same one the hosted service makes.
+      const plan = mirrorTarget({
+        leaderNet: follow.leaderNet,
+        ours,
+        mark,
+        policy: {
+          ratio: RATIO,
+          maxNotional: MAX_NOTIONAL,
+          minGap: MIN_GAP,
+          anchor,
+          lotSize: lot,
+          minQuantity: minQty,
+          baseDecimals: decimals,
+        },
+      });
 
       const stamp = c.faint(new Date().toTimeString().slice(0, 8));
       const line =
         `${stamp} ${c.dim(FOLLOW_EXISTING ? "leader" : "leader Δ")} ${fmtQty(human(follow.leaderNet), sym, 5)}` +
-        `  ${c.dim("target")} ${fmtQty(human(target), sym, 5)}` +
+        `  ${c.dim("target")} ${fmtQty(human(plan.target), sym, 5)}` +
         `  ${c.dim("ours")} ${fmtQty(human(ours), sym, 5)}` +
         (folded.added.length > 0 ? `  ${c.violet(`${folded.added.length} new fill(s)`)}` : "");
 
-      if (magnitude === 0n || magnitude < minQty) {
-        console.log(`${line}  ${c.faint("· in line")}`);
-      } else if (gapValue < MIN_GAP) {
-        // Crossing the spread for a few cents of alignment costs more than the
-        // drift it corrects, and it repeats every cycle.
-        console.log(`${line}  ${c.faint(`· within deadband ($${num(gapValue, 2)})`)}`);
+      if (!plan.act) {
+        const why =
+          plan.reason === "deadband"
+            ? `· within deadband ($${num(plan.gapValue, 2)})`
+            : plan.reason === "below-minimum"
+              ? `· ${num(human(plan.magnitude), 5)} ${sym} is under the market minimum`
+              : "· in line";
+        console.log(`${line}  ${c.faint(why)}`);
       } else if (!me) {
-        console.log(`${line}  ${c.amber(`· would move ${num(human(gap), 5)} ${sym}`)}`);
+        console.log(`${line}  ${c.amber(`· would move ${num(human(plan.gap), 5)} ${sym}`)}`);
       } else {
-        const side: Side = gap > 0n ? "long" : "short";
+        const side = plan.side as Side;
+        const magnitude = plan.magnitude;
         console.log(`${line}  ${c.sky(`· mirroring ${side} ${num(human(magnitude), 5)} ${sym}`)}`);
 
         const book = await ctx.exchange.fetchOrderBook(fresh.symbol, 1);

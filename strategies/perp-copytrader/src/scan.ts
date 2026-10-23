@@ -9,7 +9,7 @@
 //   npm run scan -w perp-copytrader -- DOGE     # leaderboard for a market
 //   npm run scan -w perp-copytrader -- 0x…      # ...or by pool address
 
-import { buildLeaderboard } from "./copy.js";
+import { buildLeaderboard } from "@dreamdex-bot-kit/copy-core";
 import {
   HIDEKI_INDEXER,
   IndexerError,
@@ -17,7 +17,7 @@ import {
   fetchPerpMarkets,
   fetchRecentFills,
   type MarketFacts,
-} from "./indexer.js";
+} from "@dreamdex-bot-kit/copy-core";
 import { ago, bar, banner, c, clip, field, heading, info, money, num, short, signedQty, table, warn } from "./ui.js";
 
 const INDEXER = process.env.INDEXER_URL ?? HIDEKI_INDEXER;

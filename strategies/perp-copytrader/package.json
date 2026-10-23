@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "dreamCopy — follow the best trader on a DreamDEX perp market, automatically.",
+  "description": "dreamCopy \u2014 follow the best trader on a DreamDEX perp market, automatically.",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@dreamdex-bot-kit/copy-core": "*",
     "@dreamdex-bot-kit/perp-core": "*",
     "dotenv": "^16.4.5",
     "viem": "^2.21.0"
