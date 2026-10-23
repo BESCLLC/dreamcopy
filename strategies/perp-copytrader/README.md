@@ -144,6 +144,8 @@ misconfigured bot logs what it would do instead of doing it.
 | `COPY_STATE` | `true` | Persist follow state so a restart resumes instead of flattening. |
 | `COPY_STATE_DIR` | `.state` | Where that state is kept. |
 | `COPY_MAX_FAILURES` | `10` | Consecutive failed cycles before exiting non-zero for a supervisor. |
+| `COPY_SLIPPAGE_BPS` | `20` | How far past the touch a mirroring taker may pay. |
+| `COPY_INDEXER_RETRIES` | `2` | Retries for a transient indexer fault before the cycle fails. |
 | `PERP_SYMBOL` | `BTC-PERP` | Market to trade. |
 | `PERP_LEVERAGE` | `2` | Set before sizing, since it is a floor on margin. |
 | `DRY_RUN` | `true` | `false` sends real orders. |
@@ -233,6 +235,13 @@ Requires Node 20+. `scan` needs only network access; `start` additionally needs 
 - **Following costs the spread.** dreamCopy crosses to mirror promptly, so a
   leader who makes their money providing liquidity is a poor one to copy — which
   is what `COPY_MIN_TAKER_SHARE` exists to filter.
+- **The cap saturates.** Once `COPY_MAX_NOTIONAL_USDSO` binds, the position
+  stops tracking the leader's *size*: if they are 50× larger than your cap and
+  they halve, your scaled target is still over the cap and nothing moves. You
+  track them again when their position falls back within range, and a full exit
+  still closes you, because their movement nets to zero. This is deliberate — a
+  cap is a risk limit, not a scaling factor — but it is worth knowing before you
+  set a ratio and a cap that bind at the same time.
 
 ---
 

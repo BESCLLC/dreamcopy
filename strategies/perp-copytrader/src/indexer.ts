@@ -64,7 +64,12 @@ const PAGE = 500;
 
 export class IndexerError extends Error {}
 
-async function gql<T>(url: string, query: string, variables: Record<string, unknown>): Promise<T> {
+/** Transient failures to retry: the connection itself, a rate limit, a 5xx. */
+class TransientIndexerError extends IndexerError {}
+
+const RETRIES = Number(process.env.COPY_INDEXER_RETRIES ?? 2);
+
+async function once<T>(url: string, query: string, variables: Record<string, unknown>): Promise<T> {
   let res: Response;
   try {
     res = await fetch(url, {
@@ -74,13 +79,38 @@ async function gql<T>(url: string, query: string, variables: Record<string, unkn
       signal: AbortSignal.timeout(30_000),
     });
   } catch (err) {
-    throw new IndexerError(`indexer unreachable at ${url}: ${(err as Error).message}`);
+    throw new TransientIndexerError(`indexer unreachable at ${url}: ${(err as Error).message}`);
+  }
+  if (res.status === 429 || res.status >= 500) {
+    throw new TransientIndexerError(`indexer HTTP ${res.status} ${res.statusText}`);
   }
   if (!res.ok) throw new IndexerError(`indexer HTTP ${res.status} ${res.statusText}`);
   const body = (await res.json()) as { data?: T; errors?: { message: string }[] };
+  // A rejected query is deterministic: the same request will be rejected again.
   if (body.errors?.length) throw new IndexerError(`indexer rejected the query: ${body.errors[0]?.message}`);
   if (!body.data) throw new IndexerError("indexer returned no data");
   return body.data;
+}
+
+/**
+ * One query, retried through a blip.
+ *
+ * Without this a single dropped connection fails the whole cycle, and a cycle
+ * that does not run is a position that is not checked. Only transient faults
+ * are retried; a malformed query is not going to succeed on the third attempt.
+ */
+async function gql<T>(url: string, query: string, variables: Record<string, unknown>): Promise<T> {
+  let last: unknown;
+  for (let attempt = 0; attempt <= RETRIES; attempt += 1) {
+    try {
+      return await once<T>(url, query, variables);
+    } catch (err) {
+      last = err;
+      if (!(err instanceof TransientIndexerError) || attempt === RETRIES) break;
+      await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
+    }
+  }
+  throw last;
 }
 
 /** Addresses are stored lowercase; a checksummed filter silently matches nothing. */

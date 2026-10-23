@@ -74,6 +74,9 @@ const MIN_VOLUME = envNum("COPY_MIN_VOLUME", 500);
 const MIN_TAKER_SHARE = envNum("COPY_MIN_TAKER_SHARE", 0.1);
 const LEVERAGE = envNum("PERP_LEVERAGE", 2);
 const MAX_FAILURES = envNum("COPY_MAX_FAILURES", 10);
+// How far past the touch a mirroring taker may pay. A copy that will not cross
+// is a copy that does not happen, and the leader has already moved.
+const SLIPPAGE_BPS = envNum("COPY_SLIPPAGE_BPS", 20);
 const STATE_ENABLED = envBool("COPY_STATE", true);
 const STATE_DIR = process.env.COPY_STATE_DIR ?? ".state";
 const INDEXER = process.env.INDEXER_URL ?? HIDEKI_INDEXER;
@@ -102,6 +105,9 @@ function validate(): void {
   if (MIN_TAKER_SHARE < 0 || MIN_TAKER_SHARE > 1) problems.push("COPY_MIN_TAKER_SHARE is a fraction between 0 and 1.");
   if (LEVERAGE < 1) problems.push("PERP_LEVERAGE must be at least 1.");
   if (MAX_FAILURES < 1) problems.push("COPY_MAX_FAILURES must be at least 1.");
+  if (SLIPPAGE_BPS < 0 || SLIPPAGE_BPS > 1_000) {
+    problems.push("COPY_SLIPPAGE_BPS is in basis points and must be between 0 and 1000 (1000 = 10%).");
+  }
   if (LEADER && !isAddress(LEADER)) problems.push(`COPY_LEADER="${LEADER}" is not an address.`);
   if (problems.length > 0) {
     console.error(`\n${c.rose("config:")}`);
@@ -375,6 +381,7 @@ async function main(): Promise<void> {
               price,
               quantity: sized.quantity,
               orderType: ORDER_TYPE.MARKET,
+              slippageBps: SLIPPAGE_BPS,
               label: "mirror",
             });
           }
