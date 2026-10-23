@@ -35,7 +35,6 @@ import {
   markOf,
   onStop,
   placePerp,
-  positionIn,
   preflight,
   requireMarket,
   shutdown,
@@ -45,7 +44,7 @@ import {
   type PerpContext,
   type Side,
 } from "@dreamdex-bot-kit/perp-core";
-import { isAddress, parseUnits } from "viem";
+import { isAddress } from "viem";
 
 import {
   HIDEKI_INDEXER,
@@ -120,20 +119,26 @@ function validate(): void {
 }
 
 /**
- * Our position in raw base units, signed.
+ * Our position in raw base units, signed: positive long, negative short.
  *
- * `UnifiedPosition.contracts` is a float in human units and the SDK exposes no
- * raw form, so it has to be converted. Multiplying by 10**decimals loses the
- * low digits the moment the product passes 2**53, which an 18-decimal market
- * does at nine units. Formatting to a fixed-point string and parsing that keeps
- * every digit the float actually carries.
+ * Read straight off the MarginBank, which keeps it as an exact integer. The
+ * unified `fetchPositions()` view reports `contracts` as a float in human
+ * units, and scaling that back up by 10**decimals loses the low digits once
+ * the product passes 2**53 — which an 18-decimal market such as ETH-PERP does
+ * at nine units. This read needs no conversion at all, and it works for any
+ * account rather than only the signer.
  */
-async function positionRaw(ctx: PerpContext, market: Awaited<ReturnType<typeof requireMarket>>): Promise<bigint> {
-  const position = await positionIn(ctx.exchange, market);
-  if (!position || !Number.isFinite(position.contracts)) return 0n;
-  const decimals = market.info.baseDecimals;
-  const raw = parseUnits(Math.abs(position.contracts).toFixed(decimals), decimals);
-  return position.side === "short" ? -raw : raw;
+async function positionRaw(
+  ctx: PerpContext,
+  market: Awaited<ReturnType<typeof requireMarket>>,
+  account: `0x${string}`,
+): Promise<bigint> {
+  const position = await ctx.exchange.client.getPerpPosition({
+    marginBank: market.info.marginBank,
+    account,
+    pool: market.info.poolAddress,
+  });
+  return position.size;
 }
 
 async function main(): Promise<void> {
@@ -286,7 +291,7 @@ async function main(): Promise<void> {
     // Following forward. Anchoring on whatever we already hold is what stops a
     // fresh start from reading an inherited position as "too long" and selling it.
     follow = { leaderNet: 0n, since: Math.floor(Date.now() / 1000), boundary: new Set() };
-    anchor = me ? await positionRaw(ctx, market) : 0n;
+    anchor = me ? await positionRaw(ctx, market, me) : 0n;
   }
 
   console.log(heading("Copy policy"));
@@ -327,7 +332,7 @@ async function main(): Promise<void> {
       const folded = ingest(follow, page, leader);
       follow = folded.state;
 
-      const ours = me ? await positionRaw(ctx, fresh) : 0n;
+      const ours = me ? await positionRaw(ctx, fresh, me) : 0n;
       // One shared decision, the same one the hosted service makes.
       const plan = mirrorTarget({
         leaderNet: follow.leaderNet,

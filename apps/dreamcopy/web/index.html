@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dreamCopy — copy trading for DreamDEX perps</title>
+<meta name="description" content="Find the best trader on a DreamDEX perp market and follow them automatically. Non-custodial.">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>◈</text></svg>">
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand"><span class="a">dream</span><span class="b">Copy</span></div>
+    <div class="tagline">Follow the best trader on a DreamDEX perp market.</div>
+    <div class="spacer"></div>
+    <span class="badge" id="net">…</span>
+    <span class="badge" id="mode">…</span>
+    <button id="connect" class="primary">Connect wallet</button>
+  </header>
+
+  <div class="markets" id="markets"></div>
+
+  <div class="grid">
+
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title" id="mkt-title">Leaderboard</span>
+        <span class="panel-sub" id="mkt-sub"></span>
+        <div class="spacer"></div>
+        <button class="small ghost" id="refresh">Refresh</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th class="l">Trader</th>
+              <th>Position</th>
+              <th>Entry</th>
+              <th>Realized</th>
+              <th>Unreal.</th>
+              <th>Total PnL</th>
+              <th></th>
+              <th>Volume</th>
+              <th>Taker</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rows">
+            <tr><td colspan="11" class="empty">Loading the tape…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Your follows</span>
+        <div class="spacer"></div>
+        <span class="panel-sub" id="follow-count"></span>
+      </div>
+      <div id="follows"><div class="empty">Connect a wallet to see your follows.</div></div>
+      <div style="padding:14px 16px;border-top:1px solid var(--border-soft)">
+        <div class="note">
+          <strong style="color:var(--text)">Non-custodial.</strong> dreamCopy places orders for you through a
+          linked bot key. It can open, close and cancel — it <strong style="color:var(--text)">cannot withdraw</strong>.
+          Grant it in the app under <em>wallet → Link a bot → Perps</em>:
+          <div style="margin-top:8px"><code id="operator">…</code></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    Built on the DreamDEX bot kit for the Somnia Perps Builder Bounty ·
+    <a href="https://github.com/BESCLLC/dreamcopy">github.com/BESCLLC/dreamcopy</a>
+  </footer>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg-body">
+    <div>
+      <div style="font-weight:600;margin-bottom:3px">Follow <span id="dlg-leader" style="font-family:var(--mono);color:var(--mint)"></span></div>
+      <div class="hint" id="dlg-market"></div>
+    </div>
+    <label>
+      Copy ratio
+      <input id="f-ratio" type="number" step="0.01" min="0.01" max="10" value="0.1">
+      <span class="hint">Fraction of their size you mirror. 0.1 is 10%.</span>
+    </label>
+    <label>
+      Max position value (USDso)
+      <input id="f-max" type="number" step="10" min="1" value="100">
+      <span class="hint">A hard cap on what you can be holding. The real risk limit.</span>
+    </label>
+    <label>
+      Minimum adjustment (USDso)
+      <input id="f-gap" type="number" step="0.5" min="0" value="1">
+      <span class="hint">Ignore smaller moves so dust does not pay the spread.</span>
+    </label>
+    <div class="note">
+      You copy what they do <strong style="color:var(--text)">next</strong> — any position you already
+      hold is left alone.
+    </div>
+  </div>
+  <div class="dlg-foot">
+    <button class="ghost" id="dlg-cancel">Cancel</button>
+    <button class="primary" id="dlg-go">Sign &amp; follow</button>
+  </div>
+</dialog>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>

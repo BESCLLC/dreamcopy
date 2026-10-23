@@ -7,7 +7,8 @@
   "workspaces": [
     "packages/*",
     "strategies/*",
-    "advanced/*"
+    "advanced/*",
+    "apps/*"
   ],
   "engines": {
     "node": ">=20"
@@ -19,7 +20,7 @@
     "backtest": "tsx scripts/backtest.ts",
     "build": "npm run build -w @dreamdex-bot-kit/core && npm run build -w @dreamdex-bot-kit/backtest",
     "typecheck": "npm run build && npm run typecheck --workspaces --if-present",
-    "test": "npm run test -w @dreamdex-bot-kit/backtest && npm run test -w @dreamdex-bot-kit/ec-core && npm run test -w @dreamdex-bot-kit/perp-core && npm run test -w @dreamdex-bot-kit/copy-core && npm run test -w perp-copytrader",
+    "test": "npm run test -w @dreamdex-bot-kit/backtest && npm run test -w @dreamdex-bot-kit/ec-core && npm run test -w @dreamdex-bot-kit/perp-core && npm run test -w @dreamdex-bot-kit/copy-core && npm run test -w perp-copytrader && npm run test -w dreamcopy",
     "ec:doctor": "npx tsx scripts/ec-doctor.ts",
     "perp:doctor": "npx tsx scripts/perp-doctor.ts",
     "ec:test": "node scripts/ec-test/run-gate.mjs",
