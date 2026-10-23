@@ -32,6 +32,7 @@ const ALLOWED = new Set([
   "perp-maker",
   "perp-funding",
   "perp-guard",
+  "perp-copytrader",
 ]);
 
 function normalizePrivateKey(raw) {
