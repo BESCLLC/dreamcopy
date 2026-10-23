@@ -8,6 +8,7 @@
 //   npm run dev -w dreamcopy        # dry run, nothing is sent
 //   DRY_RUN=false npm start -w dreamcopy
 
+import { networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -98,10 +99,17 @@ async function main(): Promise<void> {
     positionOf,
   });
 
+  // The dashboard is meant to be looked at on a phone as well as a laptop, so
+  // the LAN address is printed rather than left to be worked out.
+  const lan = Object.values(networkInterfaces())
+    .flat()
+    .find((n) => n && n.family === "IPv4" && !n.internal)?.address;
+
   server.listen(PORT, () => {
     console.log("");
     console.log(`  dreamCopy  ·  ${dryRun ? "DRY RUN — nothing is sent" : "LIVE — orders are real"}`);
     console.log(`  dashboard  http://localhost:${PORT}`);
+    if (lan) console.log(`  on phone   http://${lan}:${PORT}`);
     console.log(`  network    ${ctx.config.network}`);
     console.log(
       `  bot key    ${keeper.operatorAddress ?? "none — set PRIVATE_KEY to let followers link this service"}`,
