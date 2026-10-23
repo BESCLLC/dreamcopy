@@ -4,7 +4,7 @@
 
 **Find the best trader on a DreamDEX perp market. Follow them automatically.**
 
-`Somnia Hideki` · `@somnia-chain/markets-sdk` · `TypeScript` · `MIT`
+`Somnia Hideki` · `@somnia-chain/markets-sdk` · `TypeScript` · `31 tests passing` · `MIT`
 
 </div>
 
@@ -134,14 +134,23 @@ misconfigured bot logs what it would do instead of doing it.
 | `COPY_LEADER` | *(auto)* | Address to follow. Unset = pick the top of the leaderboard. |
 | `COPY_RATIO` | `0.1` | Fraction of the leader's size to mirror. |
 | `COPY_MAX_NOTIONAL_USDSO` | `100` | Hard cap on position **value**. The real risk limit. |
+| `COPY_MIN_GAP_USDSO` | `1` | Ignore adjustments worth less than this, so dust does not pay the spread every cycle. |
 | `COPY_FOLLOW_EXISTING` | `false` | `true` mirrors their whole position, not just new moves. |
-| `COPY_POLL_MS` | `15000` | How often to check. |
+| `COPY_HISTORY_CAP` | `50000` | Fills read to establish that position. Warns if it binds. |
+| `COPY_POLL_MS` | `15000` | How often to check. Minimum 2000. |
 | `COPY_MIN_VOLUME` | `500` | Ignore accounts too small to rank. |
 | `COPY_MIN_TAKER_SHARE` | `0.1` | Drop pure market makers — they have no direction to copy. |
 | `COPY_SCAN_FILLS` | `2000` | Leaderboard window size. |
+| `COPY_STATE` | `true` | Persist follow state so a restart resumes instead of flattening. |
+| `COPY_STATE_DIR` | `.state` | Where that state is kept. |
+| `COPY_MAX_FAILURES` | `10` | Consecutive failed cycles before exiting non-zero for a supervisor. |
 | `PERP_SYMBOL` | `BTC-PERP` | Market to trade. |
 | `PERP_LEVERAGE` | `2` | Set before sizing, since it is a floor on margin. |
 | `DRY_RUN` | `true` | `false` sends real orders. |
+
+Nonsensical settings are refused at startup rather than at the first order —
+including `COPY_RATIO=50`, which reads as a percentage to everyone who has ever
+typed one and would otherwise mirror the leader fifty times over.
 
 Standard kit variables (`NETWORK`, `PRIVATE_KEY`, `OWNER_ADDRESS`) behave exactly
 as they do in the other strategies.
@@ -164,8 +173,33 @@ not optional extras:
   of being rounded into a rejected order.
 - **Self-follow refused** — copying your own account compounds your position
   every cycle. The bot detects it and stops.
-- **A bad cycle costs one tick** — network and indexer failures are caught; the
-  next cycle recomputes the target from scratch.
+- **A bad cycle costs one tick** — network and indexer failures are caught and
+  backed off; the next cycle recomputes the target from scratch. After
+  `COPY_MAX_FAILURES` in a row it exits non-zero so a supervisor can restart it,
+  which is safe because the follow state is on disk.
+
+### Restarts do not flatten your position
+
+The most damaging thing a copy trader can do is close a position it did not
+open, and it is the default behaviour of the naive implementation: on restart
+the leader's movement is counted from zero, so the target is zero, so the bot
+sells everything it holds and pays the spread to do it.
+
+dreamCopy keeps two numbers on disk — the leader's movement so far, and the
+**anchor**, which is the position held when following began:
+
+```
+target = anchor + (leader's movement × ratio)
+```
+
+A restart restores both and carries on exactly where it stopped. Starting fresh
+while already holding a position anchors on it instead, so the bot leaves it
+alone and tracks the leader's moves from there. Verified end to end: a run that
+stopped at `leader Δ −0.37099 BTC` resumed at `−0.37099`, not at flat.
+
+State is keyed by network, market, leader and follow mode. Change any of them
+and the old file is ignored rather than misapplied, and a corrupt file is
+treated as absent rather than throwing.
 
 ### Trading keys
 

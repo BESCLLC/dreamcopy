@@ -5,7 +5,16 @@
 // are exactly the ones that look fine until real money is on them.
 
 import { describe, expect, it } from "vitest";
-import { alignToLot, buildLeaderboard, clampToNotional, netPosition, replay, signedQty } from "./copy.js";
+import {
+  alignToLot,
+  buildLeaderboard,
+  clampToNotional,
+  ingest,
+  netPosition,
+  replay,
+  signedQty,
+  type FollowState,
+} from "./copy.js";
 import type { Fill } from "./indexer.js";
 
 const DEC = 8;
@@ -21,9 +30,10 @@ function fill(opts: {
   taker?: string;
   maker?: string;
   t?: number;
+  id?: string;
 }): Fill {
   return {
-    id: `${opts.taker ?? LEADER}-${opts.t ?? 0}-${opts.qty}-${opts.price}-${Math.random()}`,
+    id: opts.id ?? `${opts.taker ?? LEADER}-${opts.t ?? 0}-${opts.qty}-${opts.price}-${Math.random()}`,
     taker: opts.taker ?? LEADER,
     maker: opts.maker ?? OTHER,
     takerIsBid: opts.takerIsBid,
@@ -165,6 +175,70 @@ describe("buildLeaderboard", () => {
   it("drops accounts below the volume floor", () => {
     const fills = [fill({ qty: 0.01, price: 100, takerIsBid: true })];
     expect(buildLeaderboard(fills, DEC, 100, { minVolume: 500 })).toHaveLength(0);
+  });
+});
+
+describe("ingest", () => {
+  const fresh = (since = 100): FollowState => ({ leaderNet: 0n, since, boundary: new Set() });
+
+  it("counts new fills once and moves the cursor to the newest", () => {
+    const r = ingest(fresh(100), [
+      fill({ qty: 1, price: 100, takerIsBid: true, t: 101, id: "a" }),
+      fill({ qty: 2, price: 100, takerIsBid: true, t: 102, id: "b" }),
+    ], LEADER);
+    expect(r.added).toHaveLength(2);
+    expect(Number(r.state.leaderNet) / SCALE).toBeCloseTo(3, 8);
+    expect(r.state.since).toBe(102);
+    expect([...r.state.boundary]).toEqual(["b"]);
+  });
+
+  it("does not count the boundary second twice when it is re-returned", () => {
+    // The indexer filters with `>=`, so the whole of second 102 comes back on
+    // the next poll. Counting "b" again would move the target permanently.
+    const first = ingest(fresh(100), [
+      fill({ qty: 1, price: 100, takerIsBid: true, t: 101, id: "a" }),
+      fill({ qty: 2, price: 100, takerIsBid: true, t: 102, id: "b" }),
+    ], LEADER);
+    const second = ingest(first.state, [
+      fill({ qty: 2, price: 100, takerIsBid: true, t: 102, id: "b" }),
+    ], LEADER);
+    expect(second.added).toHaveLength(0);
+    expect(second.state.leaderNet).toBe(first.state.leaderNet);
+    expect(second.state.since).toBe(102);
+  });
+
+  it("picks up a genuinely new fill inside the boundary second", () => {
+    const first = ingest(fresh(100), [fill({ qty: 1, price: 100, takerIsBid: true, t: 102, id: "b" })], LEADER);
+    const second = ingest(first.state, [
+      fill({ qty: 1, price: 100, takerIsBid: true, t: 102, id: "b" }),
+      fill({ qty: 1, price: 100, takerIsBid: true, t: 102, id: "c" }),
+    ], LEADER);
+    expect(second.added.map((f) => f.id)).toEqual(["c"]);
+    expect(Number(second.state.leaderNet) / SCALE).toBeCloseTo(2, 8);
+    // Both ids now have to be remembered, or "b" returns a third time.
+    expect([...second.state.boundary].sort()).toEqual(["b", "c"]);
+  });
+
+  it("ignores anything older than the cursor", () => {
+    const r = ingest(fresh(100), [fill({ qty: 5, price: 100, takerIsBid: true, t: 99, id: "old" })], LEADER);
+    expect(r.added).toHaveLength(0);
+    expect(r.state.leaderNet).toBe(0n);
+  });
+
+  it("counts a sell as a reduction", () => {
+    const r = ingest(fresh(100), [
+      fill({ qty: 3, price: 100, takerIsBid: true, t: 101, id: "a" }),
+      fill({ qty: 1, price: 100, takerIsBid: false, t: 102, id: "b" }),
+    ], LEADER);
+    expect(Number(r.state.leaderNet) / SCALE).toBeCloseTo(2, 8);
+  });
+
+  it("does not mutate the state it is given", () => {
+    const before = fresh(100);
+    ingest(before, [fill({ qty: 1, price: 100, takerIsBid: true, t: 101, id: "a" })], LEADER);
+    expect(before.leaderNet).toBe(0n);
+    expect(before.since).toBe(100);
+    expect(before.boundary.size).toBe(0);
   });
 });
 

@@ -4,7 +4,7 @@
 
 **Find the best trader on a DreamDEX perp market. Follow them automatically.**
 
-`Somnia Hideki` · `@somnia-chain/markets-sdk` · `TypeScript` · `18 tests passing`
+`Somnia Hideki` · `@somnia-chain/markets-sdk` · `TypeScript` · `31 tests passing`
 
 [**Full documentation →**](strategies/perp-copytrader/README.md)
 
@@ -85,9 +85,16 @@ Copying a stranger is the premise, so the limits are not optional extras:
 a **notional cap** that bounds position *value* rather than contract count;
 **forward-only following** by default, so the bot never buys into a move it
 already missed; **pool-authoritative sizing** through `getMaxPerpOrderSize`;
-the market minimum respected rather than rounded into a rejected order; and
-**self-following refused**, because copying your own account compounds it every
-cycle. `DRY_RUN` defaults to **true**.
+a **deadband** so dust adjustments do not pay the spread every cycle; the market
+minimum respected rather than rounded into a rejected order; **config validated
+at startup** rather than at the first order; and **self-following refused**,
+because copying your own account compounds it every cycle. `DRY_RUN` defaults to
+**true**.
+
+**Restarts do not flatten your position.** A copy trader that forgets how much
+the leader has moved computes a target of zero and sells everything it holds.
+dreamCopy persists the leader's movement and the position it started from, so a
+restart resumes exactly where it stopped — verified end to end.
 
 ---
 
@@ -97,12 +104,13 @@ cycle. `DRY_RUN` defaults to **true**.
 | --- | --- |
 | [`strategies/perp-copytrader/`](strategies/perp-copytrader/) | **dreamCopy** — the bot. Start here. |
 | [`strategies/perp-copytrader/README.md`](strategies/perp-copytrader/README.md) | Full docs: config, risk controls, honest limits. |
-| `strategies/perp-copytrader/src/copy.ts` | Position & PnL reconstruction (18 unit tests). |
+| `strategies/perp-copytrader/src/copy.ts` | Position & PnL reconstruction, and the fill-ingest fold. |
+| `strategies/perp-copytrader/src/state.ts` | Restart safety: the persisted follow state. |
 | `strategies/perp-copytrader/src/indexer.ts` | Indexer client and the verified schema notes. |
 | [`BOT_KIT.md`](BOT_KIT.md) | The upstream bot kit's own README. |
 
 ```bash
-npm test -w perp-copytrader        # 18 passing
+npm test -w perp-copytrader        # 31 passing
 npm run typecheck -w perp-copytrader
 ```
 

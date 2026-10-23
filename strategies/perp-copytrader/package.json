@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@dreamdex-bot-kit/perp-core": "*",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "viem": "^2.21.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

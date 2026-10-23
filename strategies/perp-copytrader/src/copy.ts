@@ -160,6 +160,65 @@ export function buildLeaderboard(
     .sort((a, b) => b.total - a.total);
 }
 
+/**
+ * How much of the leader's movement has been counted, and where counting got to.
+ *
+ * This is the whole of the follow state. It is small on purpose: it survives a
+ * restart in a JSON file, and a restart that forgets it would reset the target
+ * to zero and close a position the bot did not open.
+ */
+export interface FollowState {
+  /** The leader's net movement since following began, in raw base units. */
+  leaderNet: bigint;
+  /** Newest fill timestamp counted so far. */
+  since: number;
+  /** Ids already counted at exactly `since`. */
+  boundary: Set<string>;
+}
+
+/**
+ * Fold a freshly-read page of the leader's fills into the follow state.
+ *
+ * The indexer filters timestamps with `>=`, so every poll re-returns the whole
+ * boundary second. Counting one of those fills twice moves the target
+ * permanently and silently, which is why the ids at exactly `since` are
+ * remembered and skipped rather than deduped by position in the page.
+ *
+ * Pure, and it never mutates the state passed in, so it is testable on its own —
+ * which is the point, because this is where a double-count would hide.
+ */
+export function ingest(
+  state: FollowState,
+  fills: Fill[],
+  leader: string,
+): { state: FollowState; added: Fill[] } {
+  let leaderNet = state.leaderNet;
+  let newest = state.since;
+  const added: Fill[] = [];
+
+  for (const f of fills) {
+    if (f.timestamp < state.since) continue;
+    if (f.timestamp === state.since && state.boundary.has(f.id)) continue;
+    added.push(f);
+    leaderNet += signedQty(f, leader);
+    if (f.timestamp > newest) newest = f.timestamp;
+  }
+
+  let boundary: Set<string>;
+  if (newest > state.since) {
+    // Time moved on: only the new boundary second needs remembering.
+    boundary = new Set(added.filter((f) => f.timestamp === newest).map((f) => f.id));
+  } else if (added.length > 0) {
+    // Still inside the same second: remember these too, alongside what was there.
+    boundary = new Set(state.boundary);
+    for (const f of added) boundary.add(f.id);
+  } else {
+    boundary = state.boundary;
+  }
+
+  return { state: { leaderNet, since: newest, boundary }, added };
+}
+
 /** Align a signed size DOWN to the market's lot grid, keeping its direction. */
 export function alignToLot(raw: bigint, lotSize: bigint): bigint {
   if (lotSize <= 0n) return raw;

@@ -6,9 +6,14 @@
 // poll, a partial fill or a restart all converge on the next cycle instead of
 // drifting, which an order-replaying copier never recovers from.
 //
-//   target = (leader's net − baseline) × ratio, capped by notional
+//   target = anchor + (leader's movement × ratio), capped by notional
 //   gap    = target − ours
-//   send   = gap, when it clears the market's minimum
+//   send   = gap, when it clears the market minimum and the deadband
+//
+// `anchor` is our position when following began. It is why a restart does not
+// flatten an inherited position: without it the leader's movement would be
+// counted from zero, the target would be zero, and the bot would close a
+// position it never opened. It is persisted with the rest of the follow state.
 //
 // Position data for the leader comes from the indexer, because the SDK only
 // ever reports the signer's own positions. Our own side is read from the SDK,
@@ -37,12 +42,22 @@ import {
   sizeOrder,
   sleep,
   tradingKeyCheck,
+  type PerpContext,
   type Side,
 } from "@dreamdex-bot-kit/perp-core";
+import { isAddress, parseUnits } from "viem";
 
-import { alignToLot, buildLeaderboard, clampToNotional, netPosition, signedQty } from "./copy.js";
-import { HIDEKI_INDEXER, fetchAccountFills, fetchRecentFills, norm, type Fill } from "./indexer.js";
-import { ago, bar, banner, c, field, heading, info, money, num, ok, short, signedQty as fmtQty, table, warn } from "./ui.js";
+import {
+  alignToLot,
+  buildLeaderboard,
+  clampToNotional,
+  ingest,
+  netPosition,
+  type FollowState,
+} from "./copy.js";
+import { HIDEKI_INDEXER, fetchAccountFills, fetchRecentFills, norm } from "./indexer.js";
+import { loadState, saveState, type StateKey } from "./state.js";
+import { ago, bad, bar, banner, c, field, heading, info, money, num, ok, short, signedQty as fmtQty, table, warn } from "./ui.js";
 
 // Read .env before the constants below are evaluated: ES modules bind these at
 // import time, which is earlier than anything inside main().
@@ -51,12 +66,16 @@ loadEnv();
 const LEADER = (process.env.COPY_LEADER ?? "").trim();
 const RATIO = envNum("COPY_RATIO", 0.1);
 const MAX_NOTIONAL = envNum("COPY_MAX_NOTIONAL_USDSO", 100);
+const MIN_GAP = envNum("COPY_MIN_GAP_USDSO", 1);
 const FOLLOW_EXISTING = envBool("COPY_FOLLOW_EXISTING", false);
 const POLL_MS = envNum("COPY_POLL_MS", 15_000);
 const SCAN_FILLS = envNum("COPY_SCAN_FILLS", 2_000);
 const MIN_VOLUME = envNum("COPY_MIN_VOLUME", 500);
 const MIN_TAKER_SHARE = envNum("COPY_MIN_TAKER_SHARE", 0.1);
 const LEVERAGE = envNum("PERP_LEVERAGE", 2);
+const MAX_FAILURES = envNum("COPY_MAX_FAILURES", 10);
+const STATE_ENABLED = envBool("COPY_STATE", true);
+const STATE_DIR = process.env.COPY_STATE_DIR ?? ".state";
 const INDEXER = process.env.INDEXER_URL ?? HIDEKI_INDEXER;
 
 /** Scale a signed raw size by a fractional ratio without leaving integer maths. */
@@ -65,17 +84,64 @@ function scaleBy(raw: bigint, ratio: number): bigint {
   return (raw * bps) / 10_000n;
 }
 
+/**
+ * Stop before trading on a setting that cannot be meant.
+ *
+ * Every one of these would otherwise fail somewhere less obvious: a zero ratio
+ * silently never trades, a one-second poll hammers the indexer until it refuses,
+ * and a ratio of 50 reads as "50%" to everyone who has ever typed a percentage.
+ */
+function validate(): void {
+  const problems: string[] = [];
+  if (!(RATIO > 0)) problems.push("COPY_RATIO must be greater than 0 (0.1 mirrors a tenth of the leader's size).");
+  if (RATIO > 10) problems.push(`COPY_RATIO=${RATIO} is a multiple, not a percent: 0.1 is 10%. Use a value at or below 10.`);
+  if (!(MAX_NOTIONAL > 0)) problems.push("COPY_MAX_NOTIONAL_USDSO must be greater than 0; it is the cap on position value.");
+  if (MIN_GAP < 0) problems.push("COPY_MIN_GAP_USDSO cannot be negative.");
+  if (POLL_MS < 2_000) problems.push(`COPY_POLL_MS=${POLL_MS} is too aggressive; use 2000 or more.`);
+  if (!(SCAN_FILLS > 0)) problems.push("COPY_SCAN_FILLS must be greater than 0.");
+  if (MIN_TAKER_SHARE < 0 || MIN_TAKER_SHARE > 1) problems.push("COPY_MIN_TAKER_SHARE is a fraction between 0 and 1.");
+  if (LEVERAGE < 1) problems.push("PERP_LEVERAGE must be at least 1.");
+  if (MAX_FAILURES < 1) problems.push("COPY_MAX_FAILURES must be at least 1.");
+  if (LEADER && !isAddress(LEADER)) problems.push(`COPY_LEADER="${LEADER}" is not an address.`);
+  if (problems.length > 0) {
+    console.error(`\n${c.rose("config:")}`);
+    for (const p of problems) console.error(`  ${bad(p)}`);
+    console.error("");
+    process.exit(1);
+  }
+}
+
+/**
+ * Our position in raw base units, signed.
+ *
+ * `UnifiedPosition.contracts` is a float in human units and the SDK exposes no
+ * raw form, so it has to be converted. Multiplying by 10**decimals loses the
+ * low digits the moment the product passes 2**53, which an 18-decimal market
+ * does at nine units. Formatting to a fixed-point string and parsing that keeps
+ * every digit the float actually carries.
+ */
+async function positionRaw(ctx: PerpContext, market: Awaited<ReturnType<typeof requireMarket>>): Promise<bigint> {
+  const position = await positionIn(ctx.exchange, market);
+  if (!position || !Number.isFinite(position.contracts)) return 0n;
+  const decimals = market.info.baseDecimals;
+  const raw = parseUnits(Math.abs(position.contracts).toFixed(decimals), decimals);
+  return position.side === "short" ? -raw : raw;
+}
+
 async function main(): Promise<void> {
-  const live = process.env.DRY_RUN === "false";
-  const ctx = createExchange({ withSigner: live });
+  validate();
+  const liveTrading = process.env.DRY_RUN === "false";
+  const ctx = createExchange({ withSigner: liveTrading });
   const stopped = onStop();
   const market = await requireMarket(ctx.exchange, ctx.config.symbol || "BTC-PERP");
   const me = ctx.exchange.walletAddress as `0x${string}` | undefined;
   const pool = market.info.poolAddress;
-  const scale = 10 ** market.info.baseDecimals;
+  const decimals = market.info.baseDecimals;
+  const scale = 10 ** decimals;
   const lot = BigInt(market.info.lotSize ?? 0);
   const minQty = BigInt(market.info.minQuantity ?? 0);
   const sym = market.info.baseSymbol;
+  const human = (raw: bigint) => Number(raw) / scale;
 
   console.log(banner(`copy trading on ${market.display}`));
 
@@ -118,7 +184,7 @@ async function main(): Promise<void> {
   } else {
     console.log(field("choosing", c.dim(`ranking the last ${SCAN_FILLS.toLocaleString("en-US")} fills…`)));
     const window = await fetchRecentFills(INDEXER, pool, SCAN_FILLS);
-    const ranked = buildLeaderboard(window, market.info.baseDecimals, mark0, {
+    const ranked = buildLeaderboard(window, decimals, mark0, {
       minVolume: MIN_VOLUME,
       minTakerShare: MIN_TAKER_SHARE,
       // Never follow ourselves: it would compound our own position every cycle.
@@ -167,34 +233,39 @@ async function main(): Promise<void> {
     await shutdown(ctx);
     return;
   }
+  if (ctx.config.owner && leader === norm(ctx.config.owner)) {
+    console.log(`\n${warn("the leader is the account this key trades for. Copying it compounds its own position.")}\n`);
+    await shutdown(ctx);
+    return;
+  }
 
-  // ── the policy ───────────────────────────────────────────────────────────
-  // Two ways to follow, which cost very different amounts to start.
-  //
-  // By default the bot copies what the leader does NEXT: it starts counting at
-  // zero from now, so the work is proportional to their new fills and no
-  // history is read at all. It also will not buy into a move it already missed,
-  // which is the safer default for somebody else's entry.
-  //
-  // COPY_FOLLOW_EXISTING=true mirrors their whole position instead, and that
-  // needs their entire history to know what it is. On a high-frequency account
-  // that is a great many rows, so the read is capped and says when it hit it.
-  let leaderNet = 0n;
-  let since = Math.floor(Date.now() / 1000);
-  // Ids already counted at exactly `since`. The indexer filter is `>=`, so the
-  // boundary second comes back every poll; without this its fills count twice
-  // and the target is permanently wrong.
-  let boundary = new Set<string>();
+  // ── where we are following from ──────────────────────────────────────────
+  const key: StateKey = {
+    network: ctx.config.network,
+    symbol: market.symbol,
+    leader,
+    followExisting: FOLLOW_EXISTING,
+  };
+  const restored = STATE_ENABLED ? loadState(STATE_DIR, key) : undefined;
 
-  if (FOLLOW_EXISTING) {
+  let follow: FollowState;
+  let anchor: bigint;
+
+  if (restored) {
+    // Resuming: both the count and the position it was measured from come back,
+    // so the target lands exactly where it was before the restart.
+    follow = restored.state;
+    anchor = restored.anchor;
+  } else if (FOLLOW_EXISTING) {
     const cap = Math.trunc(envNum("COPY_HISTORY_CAP", 50_000));
     const history = await fetchAccountFills(INDEXER, pool, leader, { cap });
-    leaderNet = netPosition(history, leader);
     const newest = history.reduce((t, f) => Math.max(t, f.timestamp), 0);
-    if (newest > 0) {
-      since = newest;
-      boundary = new Set(history.filter((f) => f.timestamp === newest).map((f) => f.id));
-    }
+    follow = {
+      leaderNet: netPosition(history, leader),
+      since: newest > 0 ? newest : Math.floor(Date.now() / 1000),
+      boundary: new Set(history.filter((f) => f.timestamp === newest).map((f) => f.id)),
+    };
+    anchor = 0n;
     if (history.length >= cap) {
       console.log(
         `\n${warn(
@@ -203,27 +274,40 @@ async function main(): Promise<void> {
         )}`,
       );
     }
+  } else {
+    // Following forward. Anchoring on whatever we already hold is what stops a
+    // fresh start from reading an inherited position as "too long" and selling it.
+    follow = { leaderNet: 0n, since: Math.floor(Date.now() / 1000), boundary: new Set() };
+    anchor = me ? await positionRaw(ctx, market) : 0n;
   }
 
   console.log(heading("Copy policy"));
   console.log(field("ratio", `${c.text(`${(RATIO * 100).toFixed(1)}%`)} ${c.dim("of the leader's size")}`));
   console.log(field("cap", `${c.text(`$${num(MAX_NOTIONAL, 0)}`)} ${c.dim("max position value")}`));
+  console.log(field("deadband", c.dim(MIN_GAP > 0 ? `ignore adjustments under $${num(MIN_GAP, 2)}` : "none")));
   console.log(
     field(
       "copying",
       FOLLOW_EXISTING
-        ? `${c.text("their whole position")} ${c.dim(`— currently ${fmtQty(Number(leaderNet) / scale, sym, 5)}`)}`
+        ? `${c.text("their whole position")} ${c.dim(`— currently ${fmtQty(human(follow.leaderNet), sym, 5)}`)}`
         : `${c.text("their moves from now on")} ${c.dim("— not the position they already hold")}`,
     ),
   );
+  if (anchor !== 0n) {
+    console.log(field("anchor", `${fmtQty(human(anchor), sym, 5)} ${c.dim("— held at start, kept as the base")}`));
+  }
+  if (restored) {
+    console.log(field("resumed", c.mint(`from saved state (${ago(Math.floor(Date.parse(restored.updatedAt) / 1000))})`)));
+  } else if (STATE_ENABLED) {
+    console.log(field("state", c.dim(`${STATE_DIR}/ — restored on restart`)));
+  }
   console.log(field("poll", c.dim(`${(POLL_MS / 1000).toFixed(0)}s`)));
 
   console.log(heading("Following"));
-  if (!me) {
-    console.log(`  ${c.dim("read-only: the target is shown each cycle, nothing is sent.")}`);
-  }
+  if (!me) console.log(`  ${c.dim("read-only: the target is shown each cycle, nothing is sent.")}`);
 
   // ── the loop ─────────────────────────────────────────────────────────────
+  let failures = 0;
   while (!stopped()) {
     try {
       // Re-read the market: `market.info` is a snapshot, so a loop that reuses
@@ -231,51 +315,37 @@ async function main(): Promise<void> {
       const fresh = await requireMarket(ctx.exchange, market.symbol, { reload: true });
       const mark = (await liveMark(ctx.exchange, fresh)) ?? markOf(fresh.info);
 
-      // Incremental: only the boundary second is ever re-read, and the ids
-      // already counted in it are skipped. Nothing older is fetched again.
-      const recent = await fetchAccountFills(INDEXER, pool, leader, { sinceTimestamp: since, cap: 20_000 });
-      const added: Fill[] = [];
-      let newest = since;
-      for (const f of recent) {
-        if (f.timestamp < since) continue;
-        if (f.timestamp === since && boundary.has(f.id)) continue;
-        added.push(f);
-        leaderNet += signedQty(f, leader);
-        if (f.timestamp > newest) newest = f.timestamp;
-      }
-      if (newest > since) {
-        since = newest;
-        boundary = new Set(added.filter((f) => f.timestamp === newest).map((f) => f.id));
-      } else {
-        for (const f of added) boundary.add(f.id);
-      }
+      const page = await fetchAccountFills(INDEXER, pool, leader, { sinceTimestamp: follow.since, cap: 20_000 });
+      const folded = ingest(follow, page, leader);
+      follow = folded.state;
 
       const target = alignToLot(
-        clampToNotional(scaleBy(leaderNet, RATIO), mark, MAX_NOTIONAL, fresh.info.baseDecimals),
+        clampToNotional(anchor + scaleBy(follow.leaderNet, RATIO), mark, MAX_NOTIONAL, decimals),
         lot,
       );
-
-      const position = me ? await positionIn(ctx.exchange, fresh) : undefined;
-      const ours = position
-        ? BigInt(Math.round(position.contracts * scale)) * (position.side === "short" ? -1n : 1n)
-        : 0n;
+      const ours = me ? await positionRaw(ctx, fresh) : 0n;
       const gap = alignToLot(target - ours, lot);
-      const stamp = c.faint(new Date().toTimeString().slice(0, 8));
-
-      const line =
-        `${stamp} ${c.dim(FOLLOW_EXISTING ? "leader" : "leader Δ")} ${fmtQty(Number(leaderNet) / scale, sym, 5)}` +
-        `  ${c.dim("target")} ${fmtQty(Number(target) / scale, sym, 5)}` +
-        `  ${c.dim("ours")} ${fmtQty(Number(ours) / scale, sym, 5)}` +
-        (added.length > 0 ? `  ${c.violet(`${added.length} new fill(s)`)}` : "");
-
       const magnitude = gap < 0n ? -gap : gap;
-      if (magnitude < minQty || magnitude === 0n) {
+      const gapValue = Number.isFinite(mark) ? human(magnitude) * mark : 0;
+
+      const stamp = c.faint(new Date().toTimeString().slice(0, 8));
+      const line =
+        `${stamp} ${c.dim(FOLLOW_EXISTING ? "leader" : "leader Δ")} ${fmtQty(human(follow.leaderNet), sym, 5)}` +
+        `  ${c.dim("target")} ${fmtQty(human(target), sym, 5)}` +
+        `  ${c.dim("ours")} ${fmtQty(human(ours), sym, 5)}` +
+        (folded.added.length > 0 ? `  ${c.violet(`${folded.added.length} new fill(s)`)}` : "");
+
+      if (magnitude === 0n || magnitude < minQty) {
         console.log(`${line}  ${c.faint("· in line")}`);
+      } else if (gapValue < MIN_GAP) {
+        // Crossing the spread for a few cents of alignment costs more than the
+        // drift it corrects, and it repeats every cycle.
+        console.log(`${line}  ${c.faint(`· within deadband ($${num(gapValue, 2)})`)}`);
       } else if (!me) {
-        console.log(`${line}  ${c.amber(`· would move ${num(Number(gap) / scale, 5)} ${sym}`)}`);
+        console.log(`${line}  ${c.amber(`· would move ${num(human(gap), 5)} ${sym}`)}`);
       } else {
         const side: Side = gap > 0n ? "long" : "short";
-        console.log(`${line}  ${c.sky(`· mirroring ${side} ${num(Number(magnitude) / scale, 5)} ${sym}`)}`);
+        console.log(`${line}  ${c.sky(`· mirroring ${side} ${num(human(magnitude), 5)} ${sym}`)}`);
 
         const book = await ctx.exchange.fetchOrderBook(fresh.symbol, 1);
         const touch = side === "long" ? book.asks[0]?.[0] : book.bids[0]?.[0];
@@ -296,7 +366,7 @@ async function main(): Promise<void> {
             console.log(`  ${warn(`cannot mirror: ${sized.reason}`)}`);
           } else {
             if (sized.quantity < magnitude) {
-              console.log(`  ${c.dim(`capped to ${num(Number(sized.quantity) / scale, 5)} ${sym} by ${sized.limitedBy ?? "the pool"}`)}`);
+              console.log(`  ${c.dim(`capped to ${num(human(sized.quantity), 5)} ${sym} by ${sized.limitedBy ?? "the pool"}`)}`);
             }
             await placePerp({
               ctx,
@@ -310,21 +380,34 @@ async function main(): Promise<void> {
           }
         }
       }
+
+      // Persist only after a clean cycle: a state written mid-failure could
+      // record fills as counted that were never acted on.
+      if (STATE_ENABLED) saveState(STATE_DIR, key, follow, anchor);
+      failures = 0;
     } catch (err) {
-      // A bad cycle is not a reason to abandon the position. The next one
-      // recomputes the target from scratch, so a transient failure costs a tick.
-      console.log(`  ${warn((err as Error).message.slice(0, 160))}`);
+      failures += 1;
+      console.log(`  ${warn(`cycle failed (${failures}/${MAX_FAILURES}): ${(err as Error).message.slice(0, 160)}`)}`);
+      if (failures >= MAX_FAILURES) {
+        // Exiting non-zero lets a supervisor restart the bot, which is safe
+        // precisely because the follow state is on disk.
+        console.log(`\n${bad(`${MAX_FAILURES} consecutive failures, stopping. The position is left as it is.`)}\n`);
+        process.exitCode = 1;
+        break;
+      }
     }
 
-    await sleep(POLL_MS, stopped);
+    // Back off while failing, so an outage is not also a request flood.
+    await sleep(POLL_MS * Math.min(failures + 1, 5), stopped);
   }
 
+  if (STATE_ENABLED) saveState(STATE_DIR, key, follow, anchor);
   console.log(`\n${info("stopped. The position stays as it is; restart to resume following.")}\n`);
   await shutdown(ctx);
 }
 
 main().then(
-  () => process.exit(0),
+  () => process.exit(process.exitCode ?? 0),
   (err) => {
     console.error(`\n${c.rose("error: ")}${err instanceof Error ? err.message : err}\n`);
     process.exit(1);
